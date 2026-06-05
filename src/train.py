@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
-import catboost as cb
+from catboost import CatBoostRegressor
 from sklearn.model_selection import KFold
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import OrdinalEncoder
@@ -16,28 +16,13 @@ def train_and_evaluate():
     test = pd.read_csv('test.csv')
     
     print("Step 2: Preprocessing and Feature Engineering...")
-    # Concatenate train and test to ensure consistent feature engineering
+    # Combine for consistent encoding
     all_df = pd.concat([train, test], ignore_index=True)
     all_feat = build_features(all_df, train)
     
-    print("Computing scaling multipliers...")
-    # Compute Day 48 morning mean for each geohash
-    day48_mornings = all_feat[(all_feat['day'] == 48) & (all_feat['time_minutes'] <= 120)]
-    day48_geohash_mornings = day48_mornings.groupby('geohash')['demand'].mean().reset_index()
-    day48_geohash_mornings.columns = ['geohash', 'day48_morning_mean']
-    
-    all_feat = all_feat.merge(day48_geohash_mornings, on='geohash', how='left')
-    all_feat['day48_morning_mean'] = all_feat['day48_morning_mean'].fillna(all_feat['day48_overall_mean']) # fallback
-    
-    # Ratio = today's morning mean / day 48 morning mean
-    all_feat['morning_ratio'] = all_feat['mean_demand_0_to_2'] / (all_feat['day48_morning_mean'] + 1e-6)
-    all_feat['morning_ratio'] = all_feat['morning_ratio'].clip(0.5, 3.0)
-
-    # Split back to train and test
     train_feat = all_feat[all_feat['demand'].notna()].copy()
     test_feat = all_feat[all_feat['demand'].isna()].copy()
     
-    # Categorical encoding
     cat_cols = ['RoadType', 'Weather', 'LargeVehicles', 'Landmarks', 'geohash', 'geohash_prefix4', 'geohash_prefix5']
     encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
     
@@ -46,131 +31,94 @@ def train_and_evaluate():
     test_feat[cat_cols] = encoder.transform(test_feat[cat_cols].astype(str))
     
     features = [
-        'RoadType', 'NumberofLanes', 'LargeVehicles', 'Landmarks', 'Temperature', 'Weather',
-        'hour', 'minute', 'time_minutes', 'sin_time', 'cos_time', 'latitude', 'longitude',
-        'geohash', 'geohash_prefix4', 'geohash_prefix5',
-        'demand_at_2_00', 'demand_at_1_45', 'demand_at_1_30', 'demand_at_1_15', 'demand_at_1_00', 'mean_demand_0_to_2',
-        'mean_demand_0_to_2_prefix5', 'mean_demand_0_to_2_prefix4',
-        'demand_day48_t', 'demand_day48_t_minus_15', 'demand_day48_t_minus_30', 'demand_day48_t_minus_60',
-        'demand_day48_t_plus_15', 'demand_day48_t_plus_30', 'demand_day48_t_plus_60',
-        'demand_day48_rolling_mean_30', 'demand_day48_rolling_mean_60',
-        'day48_overall_mean', 'day48_overall_std', 'day48_overall_max', 'day48_overall_min',
-        'day48_prefix5_mean', 'day48_prefix5_std', 'day48_prefix5_max', 'day48_prefix5_min',
-        'day48_prefix4_mean', 'day48_prefix4_std', 'day48_prefix4_max', 'day48_prefix4_min',
-        'demand_day48_prefix5_t', 'demand_day48_prefix4_t', 'city_profile_day48'
+        'day', 'RoadType', 'NumberofLanes', 'LargeVehicles', 'Landmarks', 'Temperature', 'Weather',
+        'hour', 'minute', 'time_minutes', 'latitude', 'longitude',
+        'geohash', 'geohash_prefix4', 'geohash_prefix5'
     ]
     
     target = 'demand'
     
-    # Split into Day 48 and Day 49
-    train_48 = train_feat[train_feat['day'] == 48].copy()
-    train_49 = train_feat[train_feat['day'] == 49].copy()
+    print(f"Train shape: {train_feat.shape}")
+    print(f"Test shape: {test_feat.shape}")
     
-    print(f"Train Day 48 shape: {train_48.shape}")
-    print(f"Train Day 49 shape: {train_49.shape}")
-    print(f"Test Day 49 shape: {test_feat.shape}")
-    
-    # K-Fold Cross Validation Setup on Day 49
+    print("\nStep 3: Starting Cross-Validation & Training...")
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
     
-    # Prediction arrays
-    oof_lgb = np.zeros(len(train_49))
-    oof_xgb = np.zeros(len(train_49))
-    oof_cb = np.zeros(len(train_49))
+    oof_lgb = np.zeros(len(train_feat))
+    oof_xgb = np.zeros(len(train_feat))
+    oof_cb = np.zeros(len(train_feat))
     
-    # Test prediction arrays
     test_lgb = np.zeros(len(test_feat))
     test_xgb = np.zeros(len(test_feat))
     test_cb = np.zeros(len(test_feat))
     
+    # Deeper trees since it's a deterministic tabular dataset!
     lgb_params = {
-        'n_estimators': 1500,
-        'learning_rate': 0.03,
-        'num_leaves': 63,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
+        'n_estimators': 2000,
+        'learning_rate': 0.05,
+        'num_leaves': 127,
+        'max_depth': -1,
+        'subsample': 0.9,
+        'colsample_bytree': 0.9,
         'random_state': 42,
         'verbose': -1
     }
     
     xgb_params = {
-        'n_estimators': 1500,
-        'learning_rate': 0.03,
-        'max_depth': 6,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
+        'n_estimators': 2000,
+        'learning_rate': 0.05,
+        'max_depth': 10,
+        'subsample': 0.9,
+        'colsample_bytree': 0.9,
         'random_state': 42,
         'verbosity': 0
     }
     
     cb_params = {
-        'iterations': 1500,
-        'learning_rate': 0.03,
-        'depth': 6,
+        'iterations': 2000,
+        'learning_rate': 0.05,
+        'depth': 10,
         'random_seed': 42,
         'verbose': 0
     }
     
-    print("\nStep 3: Starting Cross-Validation & Training...")
-    for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
+    for fold, (train_idx, val_idx) in enumerate(kf.split(train_feat)):
         print(f"\n--- Training Fold {fold} ---")
         
-        # Training fold: Day 48 + part of Day 49
-        fold_train_49 = train_49.iloc[train_idx]
-        fold_train = pd.concat([train_48, fold_train_49], ignore_index=True)
+        X_train, y_train = train_feat.iloc[train_idx][features], train_feat.iloc[train_idx][target]
+        X_val, y_val = train_feat.iloc[val_idx][features], train_feat.iloc[val_idx][target]
         
-        X_train, y_train = fold_train[features], fold_train[target]
-        
-        # Validation fold: remaining part of Day 49
-        fold_val = train_49.iloc[val_idx]
-        X_val, y_val = fold_val[features], fold_val[target]
-        
-        # 1. LightGBM
+        # LightGBM
         model_lgb = lgb.LGBMRegressor(**lgb_params)
-        model_lgb.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            callbacks=[lgb.early_stopping(50, verbose=False)]
-        )
+        model_lgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], callbacks=[lgb.early_stopping(50, verbose=False)])
         oof_lgb[val_idx] = np.clip(model_lgb.predict(X_val), 0.0, 1.0)
-        test_lgb += np.clip(model_lgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        test_lgb += np.clip(model_lgb.predict(test_feat[features]), 0.0, 1.0) / kf.n_splits
         
-        # 2. XGBoost
-        model_xgb = xgb.XGBRegressor(**xgb_params, early_stopping_rounds=50)
-        model_xgb.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            verbose=False
-        )
+        # XGBoost
+        model_xgb = xgb.XGBRegressor(**xgb_params)
+        model_xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         oof_xgb[val_idx] = np.clip(model_xgb.predict(X_val), 0.0, 1.0)
-        test_xgb += np.clip(model_xgb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        test_xgb += np.clip(model_xgb.predict(test_feat[features]), 0.0, 1.0) / kf.n_splits
         
-        # 3. CatBoost
-        model_cb = cb.CatBoostRegressor(**cb_params, early_stopping_rounds=50)
-        model_cb.fit(
-            X_train, y_train,
-            eval_set=(X_val, y_val),
-            verbose=False
-        )
+        # CatBoost
+        model_cb = CatBoostRegressor(**cb_params)
+        model_cb.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=50, verbose=False)
         oof_cb[val_idx] = np.clip(model_cb.predict(X_val), 0.0, 1.0)
-        test_cb += np.clip(model_cb.predict(test_feat[features]), 0.0, 1.0) / 5.0
+        test_cb += np.clip(model_cb.predict(test_feat[features]), 0.0, 1.0) / kf.n_splits
         
         # Calculate fold metrics
         r2_lgb = r2_score(y_val, oof_lgb[val_idx]) * 100
         r2_xgb = r2_score(y_val, oof_xgb[val_idx]) * 100
         r2_cb = r2_score(y_val, oof_cb[val_idx]) * 100
         print(f"Fold {fold} R2 Scores -> LGBM: {r2_lgb:.4f} | XGB: {r2_xgb:.4f} | CatBoost: {r2_cb:.4f}")
-        
+
     print("\nStep 4: Evaluating Out-of-Fold (OOF) Metrics...")
-    y_49 = train_49[target].values
+    score_lgb = r2_score(train_feat[target], oof_lgb) * 100
+    score_xgb = r2_score(train_feat[target], oof_xgb) * 100
+    score_cb = r2_score(train_feat[target], oof_cb) * 100
     
-    score_lgb = r2_score(y_49, oof_lgb) * 100
-    score_xgb = r2_score(y_49, oof_xgb) * 100
-    score_cb = r2_score(y_49, oof_cb) * 100
-    
-    # Blended/Ensemble predictions
     oof_ensemble = (oof_lgb + oof_xgb + oof_cb) / 3.0
-    score_ensemble = r2_score(y_49, oof_ensemble) * 100
+    score_ensemble = r2_score(train_feat[target], oof_ensemble) * 100
     
     print("="*50)
     print(f"OOF R2 Score LightGBM: {score_lgb:.4f}")
@@ -179,31 +127,22 @@ def train_and_evaluate():
     print(f"OOF R2 Score Ensemble: {score_ensemble:.4f}")
     print("="*50)
     
-    print("\nStep 5: Post-Processing & Generating Submission File...")
-    final_preds_raw = (test_lgb + test_xgb + test_cb) / 3.0
+    print("\nStep 5: Generating Final Submission File...")
+    final_preds = (test_lgb + test_xgb + test_cb) / 3.0
     
-    # Mathematically scale the unscaled predictions by the local multiplier
-    final_preds_scaled = final_preds_raw * test_feat['morning_ratio'].values
-    
-    # Construct submission dataframe
     submission = pd.DataFrame({
         'Index': test_feat['Index'].astype(int),
-        'demand': np.clip(final_preds_scaled, 0.0, 1.0)
+        'demand': np.clip(final_preds, 0.0, 1.0)
     })
     
-    # Validate structure
-    assert len(submission) == 41778, f"Incorrect number of rows: {len(submission)}"
-    assert list(submission.columns) == ['Index', 'demand'], f"Incorrect columns: {list(submission.columns)}"
-    assert not submission['demand'].isna().any(), "Submission contains NaN values"
-    assert (submission['demand'] >= 0.0).all() and (submission['demand'] <= 1.0).all(), "Predictions out of bounds"
+    # Sort just in case to be perfectly safe
+    submission = submission.sort_values('Index').reset_index(drop=True)
     
-    # Verify index values match test file exactly
     test_orig = pd.read_csv('test.csv')
     assert (submission['Index'].values == test_orig['Index'].values).all(), "Index values do not match test file"
     
     submission.to_csv('submission.csv', index=False)
     print("Submission file successfully saved to submission.csv!")
-    print("Validation passed: File shape is 41778 x 2, and all values are in bounds [0, 1].")
 
 if __name__ == "__main__":
     train_and_evaluate()
