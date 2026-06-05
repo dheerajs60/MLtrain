@@ -73,7 +73,7 @@ def train_and_evaluate():
     lgb_params = {
         'n_estimators': 1500,
         'learning_rate': 0.03,
-        'num_leaves': 63,
+        'num_leaves': 31,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'random_state': 42,
@@ -83,7 +83,7 @@ def train_and_evaluate():
     xgb_params = {
         'n_estimators': 1500,
         'learning_rate': 0.03,
-        'max_depth': 6,
+        'max_depth': 5,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'random_state': 42,
@@ -93,7 +93,7 @@ def train_and_evaluate():
     cb_params = {
         'iterations': 1500,
         'learning_rate': 0.03,
-        'depth': 6,
+        'depth': 5,
         'random_seed': 42,
         'verbose': 0
     }
@@ -102,9 +102,9 @@ def train_and_evaluate():
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
         print(f"\n--- Training Fold {fold} ---")
         
-        # Training fold: Day 48 + part of Day 49
+        # Training fold: Day 49 only to avoid target leak
         fold_train_49 = train_49.iloc[train_idx]
-        fold_train = pd.concat([train_48, fold_train_49], ignore_index=True)
+        fold_train = fold_train_49.copy()
         
         X_train, y_train = fold_train[features], fold_train[target]
         

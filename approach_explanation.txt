@@ -1,7 +1,7 @@
 Traffic Demand Prediction System - Approach Explanation
 
 1. Overall Approach
-Our objective was to build a highly accurate machine learning system to predict traffic demand (demand) for the later part of Day 49 (2:15 to 13:45) based on historical traffic patterns from Day 48 and the early morning of Day 49 (0:00 to 2:00). We set up a robust temporal cross-validation strategy using 5-fold CV to optimize the model parameters and ensemble predictions.
+Our objective was to build a highly accurate machine learning system to predict traffic demand (demand) for the later part of Day 49 (2:15 to 13:45) based on historical traffic patterns from Day 48 and the early morning of Day 49 (0:00 to 2:00). We set up a robust temporal cross-validation strategy using 5-fold CV to optimize the model parameters and ensemble predictions. Crucially, to prevent a target leak where the model lazily copies Day 48 demand, we restrict the training labels EXCLUSIVELY to Day 49 data. This forces the ensemble to learn the true scaling relationship between the prior day's profile and the current day's reality.
 
 2. Feature Engineering Details
 To extract maximum predictive power from sparse geographic and temporal data, we designed a comprehensive feature engineering pipeline:
