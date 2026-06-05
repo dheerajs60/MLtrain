@@ -20,6 +20,19 @@ def train_and_evaluate():
     all_df = pd.concat([train, test], ignore_index=True)
     all_feat = build_features(all_df, train)
     
+    print("Computing scaling multipliers...")
+    # Compute Day 48 morning mean for each geohash
+    day48_mornings = all_feat[(all_feat['day'] == 48) & (all_feat['time_minutes'] <= 120)]
+    day48_geohash_mornings = day48_mornings.groupby('geohash')['demand'].mean().reset_index()
+    day48_geohash_mornings.columns = ['geohash', 'day48_morning_mean']
+    
+    all_feat = all_feat.merge(day48_geohash_mornings, on='geohash', how='left')
+    all_feat['day48_morning_mean'] = all_feat['day48_morning_mean'].fillna(all_feat['day48_overall_mean']) # fallback
+    
+    # Ratio = today's morning mean / day 48 morning mean
+    all_feat['morning_ratio'] = all_feat['mean_demand_0_to_2'] / (all_feat['day48_morning_mean'] + 1e-6)
+    all_feat['morning_ratio'] = all_feat['morning_ratio'].clip(0.5, 3.0)
+
     # Split back to train and test
     train_feat = all_feat[all_feat['demand'].notna()].copy()
     test_feat = all_feat[all_feat['demand'].isna()].copy()
@@ -73,7 +86,7 @@ def train_and_evaluate():
     lgb_params = {
         'n_estimators': 1500,
         'learning_rate': 0.03,
-        'num_leaves': 31,
+        'num_leaves': 63,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'random_state': 42,
@@ -83,7 +96,7 @@ def train_and_evaluate():
     xgb_params = {
         'n_estimators': 1500,
         'learning_rate': 0.03,
-        'max_depth': 5,
+        'max_depth': 6,
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'random_state': 42,
@@ -93,7 +106,7 @@ def train_and_evaluate():
     cb_params = {
         'iterations': 1500,
         'learning_rate': 0.03,
-        'depth': 5,
+        'depth': 6,
         'random_seed': 42,
         'verbose': 0
     }
@@ -102,9 +115,9 @@ def train_and_evaluate():
     for fold, (train_idx, val_idx) in enumerate(kf.split(train_49)):
         print(f"\n--- Training Fold {fold} ---")
         
-        # Training fold: Day 49 only to avoid target leak
+        # Training fold: Day 48 + part of Day 49
         fold_train_49 = train_49.iloc[train_idx]
-        fold_train = fold_train_49.copy()
+        fold_train = pd.concat([train_48, fold_train_49], ignore_index=True)
         
         X_train, y_train = fold_train[features], fold_train[target]
         
@@ -166,13 +179,16 @@ def train_and_evaluate():
     print(f"OOF R2 Score Ensemble: {score_ensemble:.4f}")
     print("="*50)
     
-    print("\nStep 5: Generating Submission File...")
-    final_preds = (test_lgb + test_xgb + test_cb) / 3.0
+    print("\nStep 5: Post-Processing & Generating Submission File...")
+    final_preds_raw = (test_lgb + test_xgb + test_cb) / 3.0
+    
+    # Mathematically scale the unscaled predictions by the local multiplier
+    final_preds_scaled = final_preds_raw * test_feat['morning_ratio'].values
     
     # Construct submission dataframe
     submission = pd.DataFrame({
         'Index': test_feat['Index'].astype(int),
-        'demand': np.clip(final_preds, 0.0, 1.0)
+        'demand': np.clip(final_preds_scaled, 0.0, 1.0)
     })
     
     # Validate structure
